@@ -357,13 +357,18 @@ def calculate_variance(underlying_id, trade_date, trade_time, maturity_date, T, 
     
     CP_diff_idxmin = contracti_df['put_call_diff'].idxmin()
     F_hat = contracti_df[contracti_df.put_call_diff==diff_min].F.values[0]
+
+    # Find K_0
     try:
         K_0 = max(contracti_df[contracti_df.index<F_hat].index)
     except ValueError:
         K_0 = 2*contracti_df.index.values[0] - contracti_df.index.values[1]
+    
+    contracti_df['call_lower_bilist'] = [get_call_status(k, K_0) for k in contracti_df.index]
+    contracti_df['put_lower_bilist'] = [get_put_status(k, K_0) for k in contracti_df.index]
 
-    contracti_df['Q(K)'] = contracti_df.call_close * contracti_df.call_ofm \
-                        + contracti_df.put_close * contracti_df.put_ofm
+    contracti_df['Q(K)'] = contracti_df.call_close * contracti_df.call_lower_bilist \
+                        + contracti_df.put_close * contracti_df.put_lower_bilist
     if K_0 >= contracti_df.index.values[0]:
         contracti_df.loc[K_0,'Q(K)'] = contracti_df.pc_avg[K_0]
     
@@ -371,6 +376,7 @@ def calculate_variance(underlying_id, trade_date, trade_time, maturity_date, T, 
 
     q_k = pd.DataFrame({'strike': contracti_df.index, 'price':contracti_df['Q(K)']}).set_index('strike')
     q_k['value'] = q_k.price*np.exp(T*R_f)/(q_k.index**2)
+    #print(q_k)
     first_term = 2*trap(q_k.value, q_k.index)/T
 
     sigma_square = first_term - second_term
@@ -485,7 +491,7 @@ def vix_organize_data(underlying_id, trade_date_list, assemble_inplace):
 
 def vix_concate(vix_daily_list, underlying_close):
     """
-    Merge all daily dataframe by datetime axis.
+    Merges all daily dataframe by datetime axis.
     """
     s_series = underlying_close.close
 
@@ -500,43 +506,88 @@ def vix_reference1():
     referentia_df = pd.read_csv(base_dir+'/'+referentia_filename) # Please doublecheck if reference data is saved under this directory
     return referentia_df.ivix
 
-
-def vix_plot(vix_longus_df, underlying_id, trade_date_list, reference=False):
-    fig, ax1 = plt.subplots()
-    ax2 = ax1.twinx()
-    ax1.plot(vix_longus_df.index, vix_longus_df.s, color='red', label=f'{underlying_id}')
-
-    if reference==True:
-        vix_longus_df['vix_ref'] = vix_reference1()
-        ax2.plot(vix_longus_df.index, vix_longus_df.vix_ref, color='green', label='vix_reference')
+def normalize(series, method='min-max'):
+    if method=='min-max':
+        norm_s = (series - series.min())/(series.max() - series.min())
+    elif method=='z-score':
+        norm_s = (series - series.mean())/series.std()
     else:
-        pass
-    
-    ax2.plot(vix_longus_df.index, vix_longus_df.vix, color='blue', label='vix')
-    lines1, labels1 = ax1.get_legend_handles_labels()
-    lines2, labels2 = ax2.get_legend_handles_labels()
+        raise ValueError('Method unsupported')
+    return norm_s
 
-    n = len(trade_date_list)
-    xtick = list(range(0, n, 240))
-    xtick_labels = [vix_longus_df.datetime[i].split(' ')[0] for i in range(0, vix_longus_df.shape[0], 240)]
-    
-    ax1.set_xticks(list(range(0, vix_longus_df.shape[0], 240)), minor=False)
-    ax1.set_xticklabels(xtick_labels, minor=False, rotation=30)
+def vix_plot(vix_longus_df, underlying_id, trade_date_list, reference=False, pct_comparison=False):
+    if pct_comparison == True:
+        fig, ax = plt.subplots(nrows=2, ncols=1)
+        ax0_duo = ax[0].twinx()
+        ax[0].plot(vix_longus_df.index, vix_longus_df.s, color='red', label=f'{underlying_id}')
 
-    ax1.grid()
-    ax1.legend(lines1 + lines2, labels1 + labels2, loc=0)
-    ax1.set_title(f'iVIXP-{underlying_id}, {trade_date_list[0]}~{trade_date_list[-1]}\n Latest VIX: {round(vix_longus_df.vix.values.tolist()[-1], 4)}')
+        if reference==True:
+            vix_longus_df['vix_ref'] = vix_reference1()
+            ax0_duo.plot(vix_longus_df.index, vix_longus_df.vix_ref, color='green', label='vix_reference')
+        else:
+            pass
+        
+        ax0_duo.plot(vix_longus_df.index, vix_longus_df.vix, color='blue', label='vix')
+        lines1, labels1 = ax[0].get_legend_handles_labels()
+        lines2, labels2 = ax0_duo.get_legend_handles_labels()
 
-    print('Total time consumed: ', datetime.datetime.now()- start_time)
+        n = len(trade_date_list)
+        xtick = list(range(0, n, 240))
+        xtick_labels = [vix_longus_df.datetime[i].split(' ')[0] for i in range(0, vix_longus_df.shape[0], 240)]
+        
+        ax[0].set_xticks(list(range(0, vix_longus_df.shape[0], 240)), minor=False)
+        ax[0].set_xticklabels(xtick_labels, minor=False, rotation=30)
+
+        ax[0].grid()
+        ax[0].legend(lines1 + lines2, labels1 + labels2, loc=0)
+        ax[0].set_title(f'iVIXP-{underlying_id}, {trade_date_list[0]}~{trade_date_list[-1]}\n Latest VIX: {round(vix_longus_df.vix.values.tolist()[-1], 4)}')
+        
+        # Percentage change comparison
+        vix_longus_df['vix_pct'] = normalize(vix_longus_df.vix.pct_change(), method='z-score')
+        vix_longus_df['s_pct'] = normalize(vix_longus_df.s.pct_change(), method='z-score')
+        ax[1].plot(vix_longus_df.index, vix_longus_df.vix_pct, label='vix percent change')
+        ax[1].plot(vix_longus_df.index, vix_longus_df.s_pct, label='stock price percent change')
+        ax[1].set_xticks(list(range(0, vix_longus_df.shape[0], 240)), minor=False)
+        ax[1].set_xticklabels(xtick_labels, minor=False, rotation=30)
+        ax[1].grid()
+        ax[1].legend()
+        
+        
+    elif pct_comparison == False:
+        fig, ax = plt.subplots()
+        ax0_duo = ax.twinx()
+        ax.plot(vix_longus_df.index, vix_longus_df.s, color='red', label=f'{underlying_id}')
+
+        if reference==True:
+            vix_longus_df['vix_ref'] = vix_reference1()
+            ax0_duo.plot(vix_longus_df.index, vix_longus_df.vix_ref, color='green', label='vix_reference')
+        else:
+            pass
+        
+        ax0_duo.plot(vix_longus_df.index, vix_longus_df.vix, color='blue', label='vix')
+        lines1, labels1 = ax.get_legend_handles_labels()
+        lines2, labels2 = ax0_duo.get_legend_handles_labels()
+
+        n = len(trade_date_list)
+        xtick = list(range(0, n, 240))
+        xtick_labels = [vix_longus_df.datetime[i].split(' ')[0] for i in range(0, vix_longus_df.shape[0], 240)]
+        
+        ax.set_xticks(list(range(0, vix_longus_df.shape[0], 240)), minor=False)
+        ax.set_xticklabels(xtick_labels, minor=False, rotation=30)
+
+        ax.grid()
+        ax.legend(lines1 + lines2, labels1 + labels2, loc=0)
+        ax.set_title(f'iVIXP-{underlying_id}, {trade_date_list[0]}~{trade_date_list[-1]}\n Latest VIX: {round(vix_longus_df.vix.values.tolist()[-1], 4)}')
     plt.show()
+    print('Total time consumed: ', datetime.datetime.now()- start_time)
 
 def main():
     # Inputs (of your choice)
     #underlying_id = '588000.XSHG'
     underlying_id = '000852.XSHG'
-    starting_date = '2024-06-01'
+    starting_date = '2024-07-01'
     ending_date = datetime.datetime.now().strftime('%Y-%m-%d')
-
+    ending_date = '2024-07-05'
     T_gap = np.timedelta64(30, 'D')
     time_data_inplace = False
     option_data_inplace = False
@@ -568,8 +619,8 @@ def main():
     vix_long_df = vix_concate(vix_daily_list, underlying_close)
     print(f'{datetime.datetime.now()-start_time}: Mission accomplished! Check plot')
     
-    #reference_df = vix_reference1()
-    vix_plot(vix_long_df, underlying_id, trade_date_list, reference=False)
+    reference_df = vix_reference1()
+    vix_plot(vix_long_df, underlying_id, trade_date_list, reference=False, pct_comparison=False)
     vix_long_df = vix_long_df.drop(['t', 's'], axis=1).set_index('datetime')
     vix_long_df.to_csv(data_dir+f'/iVIXP-{underlying_id}.csv')
 
